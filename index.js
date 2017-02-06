@@ -67,6 +67,10 @@ function watchify (b, opts) {
   var changingDeps = {};
   var pending = false;
   var updating = false;
+  opts.debug = opts.debug === undefined ? process.env.NODE_ENV === "production" ? false : true : !!opts.debug;
+  if (opts.debug) {
+      b.on("log", m => console.log(m));
+  }
 
   function getFilePathKey (f) {
       if (opts.root || ~CACHE_SPECIAL_KEYS.indexOf(f)) {
@@ -126,7 +130,7 @@ function watchify (b, opts) {
       try {
         var stats = fs.statSync(file);
       } catch (err) {}
-      if (!stats || cache._time[file] !== stats.mtime.getTime()) {
+      if (!stats || cache._time[getFilePathKey(file)] !== stats.mtime.getTime()) {
         // checkShasum is an array of files that we should check based
         // a hash of their contents as well as the mtime. This is useful
         // for files that are often overwritten with the same content
@@ -135,7 +139,7 @@ function watchify (b, opts) {
           cachedSourceHash = shasum(fs.readFileSync(file, 'utf8'))
           realSourceHash = shasum(cache[getFilePathKey(getFilePathKey(file))].source)
           if (cachedSourceHash == realSourceHash) {
-            cache._time[file] = stats.mtime.getTime();
+            cache._time[getFilePathKey(file)] = stats.mtime.getTime();
             return;
           }
         }
@@ -216,15 +220,16 @@ function watchify (b, opts) {
   b.on('transform', function (tr, mfile) {
     cleanDependencies(mfile);
     tr.on('file', function (dep) {
-      cache._transformDeps[mfile] = cache._transformDeps[mfile] || [];
-      cache._transformDeps[mfile].push(dep);
+      var mFileM = getFilePathKey(mfile);
+      cache._transformDeps[mFileM] = cache._transformDeps[mFileM] || [];
+      cache._transformDeps[mFileM].push(dep);
 
       try {
         var stats = fs.statSync(dep);
       } catch (err) {}
       if (stats) {
-        cache._files[dep] = dep;
-        cache._time[dep] = stats.mtime.getTime();
+        cache._files[getFilePathKey(dep)] = dep;
+        cache._time[getFilePathKey(dep)] = stats.mtime.getTime();
       }
 
       watchFile(mfile, dep);
@@ -262,13 +267,13 @@ function watchify (b, opts) {
   }
 
   function cleanDependencies(file) {
-    if (cache._transformDeps[file]) {
-      cache._transformDeps[file].forEach(function(dep) {
-        cleanEntry(cache._files[dep], dep);
+    if (cache._transformDeps[getFilePathKey(file)]) {
+      cache._transformDeps[getFilePathKey(file)].forEach(function(dep) {
+        cleanEntry(cache._files[getFilePathKey(dep)], dep);
       });
     }
 
-    delete cache._transformDeps[file];
+    delete cache._transformDeps[getFilePathKey(file)];
   }
 
   function cleanEntry(id, file) {
@@ -332,7 +337,7 @@ function watchify (b, opts) {
       mkdirp.sync(path.dirname(cacheFile));
       // Takes the source content and writes it to a file. Then
       // replaces the source content with the filepath of that file.
-      omitSources = function(key, value) {
+      var omitSources = function(key, value) {
         if (key === 'source' && value) {
           hash = shasum(value)
           var sourceCachePath = path.resolve(tmpdir, hash);
