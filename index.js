@@ -12,6 +12,7 @@ var writeJSONSync = require('jsonfile').writeFileSync;
 var os = require('os');
 var tmpdir = os.tmpdir();
 var isThere = require("is-there");
+var forEach = require("iterate-object");
 
 module.exports = watchify;
 module.exports.args = function() {
@@ -33,7 +34,7 @@ module.exports.getCache = function(cacheFile) {
   try {
     var start = Date.now()
     var f = JSON.parse(fs.readFileSync(cacheFile, 'utf8'))
-    for (key in f) {
+    for (var key in f) {
       if (~CACHE_SPECIAL_KEYS.indexOf(key)) {
         continue
       }
@@ -68,15 +69,36 @@ function watchify (b, opts) {
   var pending = false;
   var updating = false;
   opts.debug = opts.debug === undefined ? process.env.NODE_ENV === "production" ? false : true : !!opts.debug;
-  if (opts.debug) {
+  //if (opts.debug) {
       b.on("log", m => console.log(m));
-  }
+  //}
 
   function getFilePathKey (f) {
-      if (opts.root || ~CACHE_SPECIAL_KEYS.indexOf(f)) {
+      if (!opts.root || ~CACHE_SPECIAL_KEYS.indexOf(f)) {
           return f;
       }
       return path.relative(opts.root, f);
+  }
+
+  function toRelative(_cache, not) {
+      if (typeof _cache !== "object" || not) {
+          return _cache;
+      }
+      var newCache = {};
+      if (_cache._files) {
+          newCache._files = newCache._files || {};
+          forEach(_cache._files, (val, key) => {
+              if (key === "deps") {
+                  return;
+              }
+              newCache._files[getFilePathKey(key)] = getFilePathKey(key);
+          });
+      }
+      forEach(_cache, (val, key) => {
+          if (key === "_files") { return; }
+          newCache[getFilePathKey(key)] = toRelative(val);
+      });
+      return newCache;
   }
 
   if (opts.root !== false) {
@@ -130,25 +152,25 @@ function watchify (b, opts) {
       try {
         var stats = fs.statSync(file);
       } catch (err) {}
-      if (!stats || cache._time[getFilePathKey(file)] !== stats.mtime.getTime()) {
+      if (!stats || cache._time[file] !== stats.mtime.getTime()) {
         // checkShasum is an array of files that we should check based
         // a hash of their contents as well as the mtime. This is useful
         // for files that are often overwritten with the same content
         // but are still part of the bundle (e.g generated view partials)
         if (stats && opts.checkShasum && ~opts.checkShasum.indexOf(file)) {
           cachedSourceHash = shasum(fs.readFileSync(file, 'utf8'))
-          realSourceHash = shasum(cache[getFilePathKey(getFilePathKey(file))].source)
+          realSourceHash = shasum(cache[file].source)
           if (cachedSourceHash == realSourceHash) {
-            cache._time[getFilePathKey(file)] = stats.mtime.getTime();
+            cache._time[file] = stats.mtime.getTime();
             return;
           }
         }
         b.emit('log', 'Watchify cache: dep updated or removed: ' + file);
-        cleanEntry(cache._files[getFilePathKey(file)], file);
+        cleanEntry(cache._files[file], file);
 
         if (transformDepsInverted[file]) {
           transformDepsInverted[file].forEach(function(mfile) {
-            cleanEntry(cache._files[getFilePathKey(mfile)], mfile);
+            cleanEntry(cache._files[mfile], mfile);
           });
         }
 
@@ -160,7 +182,7 @@ function watchify (b, opts) {
   function collect () {
     b.pipeline.get('deps').push(through.obj(function(row, enc, next) {
       var file = row.expose ? b._expose[row.id] : row.file;
-      cache[getFilePathKey(getFilePathKey(file))] = {
+      cache[file] = {
         source: row.source,
         deps: xtend({}, row.deps)
       };
@@ -183,7 +205,7 @@ function watchify (b, opts) {
   b.on('package', function (pkg) {
     var file = path.join(pkg.__dirname, 'package.json');
     watchFile(file);
-    if (pkgcache) pkgcache[getFilePathKey(file)] = pkg;
+    if (pkgcache) pkgcache[file] = pkg;
   });
 
   b.on('reset', reset);
@@ -220,7 +242,7 @@ function watchify (b, opts) {
   b.on('transform', function (tr, mfile) {
     cleanDependencies(mfile);
     tr.on('file', function (dep) {
-      var mFileM = getFilePathKey(mfile);
+      var mFileM = mfile;
       cache._transformDeps[mFileM] = cache._transformDeps[mFileM] || [];
       cache._transformDeps[mFileM].push(dep);
 
@@ -228,8 +250,8 @@ function watchify (b, opts) {
         var stats = fs.statSync(dep);
       } catch (err) {}
       if (stats) {
-        cache._files[getFilePathKey(dep)] = dep;
-        cache._time[getFilePathKey(dep)] = stats.mtime.getTime();
+        cache._files[dep] = dep;
+        cache._time[dep] = stats.mtime.getTime();
       }
 
       watchFile(mfile, dep);
@@ -267,30 +289,30 @@ function watchify (b, opts) {
   }
 
   function cleanDependencies(file) {
-    if (cache._transformDeps[getFilePathKey(file)]) {
-      cache._transformDeps[getFilePathKey(file)].forEach(function(dep) {
-        cleanEntry(cache._files[getFilePathKey(dep)], dep);
+    if (cache._transformDeps[file]) {
+      cache._transformDeps[file].forEach(function(dep) {
+        cleanEntry(cache._files[dep], dep);
       });
     }
 
-    delete cache._transformDeps[getFilePathKey(file)];
+    delete cache._transformDeps[file];
   }
 
   function cleanEntry(id, file) {
     delete cache._files[file];
     delete cache._time[file];
-    delete cache[getFilePathKey(id)];
+    delete cache[id];
     cleanDependencies(file);
 
     return;
   }
 
   function invalidate (id) {
-    if (cache && cache[getFilePathKey(id)]) {
-      cleanEntry(id, cache[getFilePathKey(id)].file);
+    if (cache && cache[id]) {
+      cleanEntry(id, cache[id].file);
     }
     invalid = true;
-    if (pkgcache) delete pkgcache[getFilePathKey(id)];
+    if (pkgcache) delete pkgcache[id];
     changingDeps[id] = true;
     if (updating) return;
 
@@ -332,24 +354,26 @@ function watchify (b, opts) {
   * Write the internal dependency cache to a file on the file system.
   */
   b.write = function() {
-      debugger
     try {
       mkdirp.sync(path.dirname(cacheFile));
       // Takes the source content and writes it to a file. Then
       // replaces the source content with the filepath of that file.
       var omitSources = function(key, value) {
         if (key === 'source' && value) {
-          hash = shasum(value)
+          var hash = shasum(value)
           var sourceCachePath = path.resolve(tmpdir, hash);
           fs.writeFileSync(sourceCachePath, value);
           return sourceCachePath
         }
         return value
       }
-      debugger
+      b.emit("log", `Creating ${cacheFile}`);
+      var relativeCache = toRelative(cache);
+      b.emit("log", `Writting ${cacheFile}`);
       writeJSONSync(cacheFile, cache, {replacer: omitSources});
+      b.emit("log", `Created ${cacheFile}`);
     } catch (err) {
-      b.emit('log', 'Erroring writing cache file ' + err.message);
+      b.emit('log', 'Erroring writing cache file ' + err.stack);
     }
   }
 
